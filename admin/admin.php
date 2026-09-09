@@ -1,0 +1,792 @@
+<?php
+
+$DB_HOST = "localhost";
+$DB_NAME = "villaflores_gaming";
+$DB_USER = "root";
+$DB_PASS = "";
+
+$error = null;
+$users = [];
+$bookings = [];
+$reviews = [];
+$stats = ["total_users" => 0, "total_bookings" => 0, "active_bookings" => 0, "today_bookings" => 0];
+define("TOTAL_PC_STATIONS", 30);
+$pcAssignments = array_fill(1, TOTAL_PC_STATIONS, null);
+
+function h($val) {
+    return htmlspecialchars($val ?? "", ENT_QUOTES, "UTF-8");
+}
+
+try {
+    $pdo = new PDO(
+        "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
+        $DB_USER,
+        $DB_PASS,
+        [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]
+    );
+
+    if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["action"] ?? "") === "delete_booking") {
+        $bookingId = (int)($_POST["booking_id"] ?? 0);
+        if ($bookingId > 0) {
+            $del = $pdo->prepare("DELETE FROM bookings WHERE id = ?");
+            $del->execute([$bookingId]);
+        }
+  
+        header("Location: admin.php");
+        exit;
+    }
+
+    if ($_SERVER["REQUEST_METHOD"] === "POST" && ($_POST["action"] ?? "") === "delete_review") {
+        $reviewId = (int)($_POST["review_id"] ?? 0);
+        if ($reviewId > 0) {
+            $del = $pdo->prepare("DELETE FROM reviews WHERE id = ?");
+            $del->execute([$reviewId]);
+        }
+        header("Location: admin.php");
+        exit;
+    }
+
+    $users = $pdo->query("SELECT id, full_name, email, created_at FROM users ORDER BY created_at DESC")->fetchAll();
+    $stats["total_users"] = count($users);
+
+
+    $reviews = $pdo->query(
+        "SELECT r.id, r.rating, r.comment, r.created_at, u.full_name
+         FROM reviews r
+         LEFT JOIN users u ON u.id = r.user_id
+         ORDER BY r.created_at DESC"
+    )->fetchAll();
+
+  
+    $bookings = $pdo->query(
+        "SELECT b.id, b.user_id, u.full_name, b.plan_name, b.stations,
+                b.booking_date, b.booking_time, b.status,
+                b.payment_method, b.payment_status, b.created_at
+         FROM bookings b
+         LEFT JOIN users u ON u.id = b.user_id
+         ORDER BY b.booking_date DESC, b.booking_time DESC"
+    )->fetchAll();
+
+    $stats["total_bookings"] = count($bookings);
+    foreach ($bookings as $b) {
+        if (strtolower($b["status"] ?? "") === "active" || strtolower($b["status"] ?? "") === "confirmed") {
+            $stats["active_bookings"]++;
+        }
+        if (($b["booking_date"] ?? "") === date("Y-m-d")) {
+            $stats["today_bookings"]++;
+        }
+    }
+
+    $pcAssignments = array_fill(1, TOTAL_PC_STATIONS, null);
+
+    $todaysBookings = array_filter($bookings, function ($b) {
+        return ($b["booking_date"] ?? "") === date("Y-m-d")
+            && strtolower($b["status"] ?? "") !== "cancelled";
+    });
+    usort($todaysBookings, function ($a, $b) {
+        return strcmp($a["booking_time"] ?? "", $b["booking_time"] ?? "");
+    });
+
+    $pcCursor = 1;
+    foreach ($todaysBookings as $tb) {
+        $count = max(1, (int)($tb["stations"] ?? 1));
+        for ($i = 0; $i < $count && $pcCursor <= TOTAL_PC_STATIONS; $i++, $pcCursor++) {
+            $pcAssignments[$pcCursor] = $tb;
+        }
+    }
+} catch (PDOException $e) {
+    $error = $e->getMessage();
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Villaflores Gaming Cafe</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Science+Gothic:wght@400;500;600;700;800;900&family=Rubik:wght@400;500;600;700&display=swap');
+
+  :root {
+    --background: #08090c;
+    --foreground: #f5f7fa;
+    --card: #101319;
+    --card-foreground: #f5f7fa;
+    --muted: #171b22;
+    --muted-foreground: #8b939f;
+    --cerulean: #00a1f5;
+    --pink: #f6047e;
+    --border: rgba(255, 255, 255, 0.09);
+    --font-display: 'Science Gothic', 'Arial Narrow', sans-serif;
+    --font-body: 'Rubik', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ---------------- Sidebar ---------------- */
+  .sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background-color: var(--card);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 28px 20px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .sidebar-brand {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+    text-transform: uppercase;
+    padding: 0 8px;
+  }
+  .sidebar-brand span { color: var(--cerulean); }
+
+  .sidebar-welcome {
+    margin-top: 6px;
+    padding: 0 8px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+  }
+
+  .sidebar-nav {
+    margin-top: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-grow: 1;
+  }
+
+  .sidebar-nav button {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 12px;
+    font-family: var(--font-body);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .sidebar-nav button .icon {
+    width: 18px;
+    text-align: center;
+    font-size: 15px;
+  }
+
+  .sidebar-nav button:hover {
+    background-color: var(--muted);
+    color: var(--foreground);
+  }
+
+  .sidebar-nav button.active {
+    background-color: var(--cerulean);
+    color: #000000;
+    font-weight: 700;
+  }
+
+  .sidebar-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sidebar-footer a {
+    display: block;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 0;
+    font-size: 13px;
+    color: var(--muted-foreground);
+    text-decoration: none;
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+
+  .sidebar-footer a:hover {
+    border-color: var(--pink);
+    color: var(--pink);
+  }
+
+  /* ---------------- Main content ---------------- */
+  .content-area {
+    flex-grow: 1;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 46px 46px;
+    min-height: 100vh;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .page-title {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 22px;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+  }
+
+  .subtitle {
+    margin-top: 4px;
+    color: var(--muted-foreground);
+    font-size: 13px;
+  }
+
+  main { padding: 40px 32px 64px; max-width: 1280px; margin: 0 auto; }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 36px;
+  }
+
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+
+  .stat-num {
+    font-family: var(--font-display);
+    font-size: 36px;
+    font-weight: 800;
+    line-height: 1;
+  }
+  .stat-card:nth-child(1) .stat-num { color: var(--cerulean); }
+  .stat-card:nth-child(2) .stat-num { color: var(--pink); }
+  .stat-card:nth-child(3) .stat-num { color: var(--cerulean); }
+  .stat-card:nth-child(4) .stat-num { color: var(--pink); }
+
+  .stat-label {
+    margin-top: 6px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+  }
+
+  section.panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 28px;
+    overflow: hidden;
+  }
+
+  .panel-head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .panel-head h2 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 17px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .panel-head .count {
+    color: var(--muted-foreground);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+
+  thead th {
+    text-align: left;
+    padding: 12px 24px;
+    color: var(--muted-foreground);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tbody td {
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    color: var(--foreground);
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--muted); }
+
+  .badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .badge.confirmed, .badge.active, .badge.paid { background: rgba(0,161,245,0.15); color: var(--cerulean); }
+  .badge.pending, .badge.unpaid { background: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border); }
+  .badge.cancelled, .badge.failed { background: rgba(246,4,126,0.15); color: var(--pink); }
+  .badge.default { background: var(--muted); color: var(--muted-foreground); }
+
+  .empty-row td {
+    text-align: center;
+    color: var(--muted-foreground);
+    padding: 40px;
+  }
+
+  .error-box {
+    background: rgba(246,4,126,0.08);
+    border: 1px solid var(--pink);
+    color: #ffb3d6;
+    padding: 16px 24px;
+    border-radius: 12px;
+    margin-bottom: 28px;
+    font-size: 14px;
+  }
+  .error-box code { color: var(--pink); }
+
+  .delete-form { display: inline; }
+  .delete-btn {
+    background: none;
+    border: 1px solid var(--pink);
+    color: var(--pink);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-family: var(--font-display);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+  .delete-btn:hover {
+    background-color: var(--pink);
+    color: #000000;
+  }
+
+  .pc-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+  }
+
+  .pc-card {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background-color: var(--card);
+    padding: 18px;
+    min-height: 110px;
+  }
+
+  .pc-card.occupied {
+    background-color: var(--cerulean);
+    border-color: var(--cerulean);
+  }
+
+  .pc-card-name {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 15px;
+    text-transform: uppercase;
+  }
+
+  .pc-card.occupied .pc-card-name,
+  .pc-card.occupied .pc-card-detail {
+    color: #000000;
+  }
+
+  .pc-card-status {
+    margin-top: 10px;
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    background: var(--muted);
+    color: var(--muted-foreground);
+  }
+
+  .pc-card.occupied .pc-card-status {
+    background: rgba(0, 0, 0, 0.2);
+    color: #000000;
+  }
+
+  .pc-card-detail {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+    line-height: 1.5;
+  }
+
+  .pc-legend {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: var(--muted-foreground);
+  }
+
+  .pc-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .pc-legend .swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  .pc-legend .swatch.idle { background: var(--muted); border: 1px solid var(--border); }
+  .pc-legend .swatch.occupied { background: var(--cerulean); }
+
+  @media (max-width: 1100px) {
+    .pc-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  @media (max-width: 900px) {
+    body { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: relative; flex-direction: row; align-items: center; flex-wrap: wrap; }
+    .sidebar-nav { flex-direction: row; margin-top: 0; flex-wrap: wrap; }
+    .sidebar-footer { flex-direction: row; margin-left: auto; }
+    .pc-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+
+</head>
+<body>
+
+<aside class="sidebar">
+  <div>
+    <div class="sidebar-brand">VILLAFLORES <span>ADMIN</span></div>
+    <div class="sidebar-welcome">Welcome, Admin</div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <button type="button" class="active" data-tab="dashboard" onclick="showTab('dashboard', this)">
+      <span class="icon">▦</span> Dashboard
+    </button>
+    <button type="button" data-tab="bookings" onclick="showTab('bookings', this)">
+      <span class="icon">▤</span> Bookings
+    </button>
+    <button type="button" data-tab="accounts" onclick="showTab('accounts', this)">
+      <span class="icon">◈</span> Accounts
+    </button>
+    <button type="button" data-tab="stations" onclick="showTab('stations', this)">
+      <span class="icon">▥</span> PC Stations
+    </button>
+    <button type="button" data-tab="reviews" onclick="showTab('reviews', this)">
+      <span class="icon">★</span> Reviews
+    </button>
+  </nav>
+
+  <div class="sidebar-footer">
+    <a href="../homepage/index.php">← Back to Site</a>
+  </div>
+</aside>
+
+<div class="content-area">
+  <header>
+    <div>
+      <div class="page-title" id="pageTitle">Dashboard</div>
+      <div class="subtitle">Accounts &amp; booking overview</div>
+    </div>
+    <div class="subtitle">Updated <?= h(date("M j, Y — g:i A")) ?></div>
+  </header>
+
+  <main>
+
+    <?php if ($error): ?>
+      <div class="error-box">
+        Couldn't connect to the database: <code><?= h($error) ?></code><br>
+        Check the <code>$DB_HOST / $DB_NAME / $DB_USER / $DB_PASS</code> values at the top of admin.php.
+      </div>
+    <?php endif; ?>
+
+    <!-- ============ DASHBOARD TAB ============ -->
+    <div class="tab-panel active" id="tab-dashboard">
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-num"><?= h($stats["total_users"]) ?></div>
+          <div class="stat-label">Registered accounts</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num"><?= h($stats["total_bookings"]) ?></div>
+          <div class="stat-label">Total bookings</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num"><?= h($stats["active_bookings"]) ?></div>
+          <div class="stat-label">Active / confirmed</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-num"><?= h($stats["today_bookings"]) ?></div>
+          <div class="stat-label">Booked for today</div>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Recent Bookings</h2>
+          <span class="count"><?= h(count($bookings)) ?> total</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Plan</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th>Payment</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (empty($bookings)): ?>
+              <tr class="empty-row"><td colspan="5">No bookings yet.</td></tr>
+            <?php else: foreach (array_slice($bookings, 0, 5) as $b):
+              $status = strtolower($b["status"] ?? "");
+              $badgeClass = in_array($status, ["confirmed", "active", "pending", "cancelled"]) ? $status : "default";
+              $paymentStatus = strtolower($b["payment_status"] ?? "");
+              $paymentBadgeClass = in_array($paymentStatus, ["paid", "unpaid", "failed"]) ? $paymentStatus : "default";
+            ?>
+              <tr>
+                <td><?= h($b["full_name"] ?? "Deleted user") ?></td>
+                <td><?= h($b["plan_name"]) ?></td>
+                <td><?= h($b["booking_date"]) ?></td>
+                <td><span class="badge <?= h($badgeClass) ?>"><?= h($b["status"] ?? "—") ?></span></td>
+                <td><span class="badge <?= h($paymentBadgeClass) ?>"><?= h($b["payment_status"] ?? "—") ?></span></td>
+              </tr>
+            <?php endforeach; endif; ?>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- ============ BOOKINGS TAB ============ -->
+    <div class="tab-panel" id="tab-bookings">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>All Bookings</h2>
+          <span class="count"><?= h(count($bookings)) ?> total</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Plan</th>
+              <th>Stations</th>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Payment</th>
+              <th>Booked on</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (empty($bookings)): ?>
+              <tr class="empty-row"><td colspan="9">No bookings yet.</td></tr>
+            <?php else: foreach ($bookings as $b):
+              $status = strtolower($b["status"] ?? "");
+              $badgeClass = in_array($status, ["confirmed", "active", "pending", "cancelled"]) ? $status : "default";
+
+              $paymentStatus = strtolower($b["payment_status"] ?? "");
+              $paymentBadgeClass = in_array($paymentStatus, ["paid", "unpaid", "failed"]) ? $paymentStatus : "default";
+              $paymentMethodLabel = $b["payment_method"] === "gcash" ? "GCash" : ($b["payment_method"] === "maya" ? "Maya" : "—");
+            ?>
+              <tr>
+                <td><?= h($b["full_name"] ?? "Deleted user") ?></td>
+                <td><?= h($b["plan_name"]) ?></td>
+                <td><?= h($b["stations"]) ?></td>
+                <td><?= h($b["booking_date"]) ?></td>
+                <td><?= h($b["booking_time"]) ?></td>
+                <td><span class="badge <?= h($badgeClass) ?>"><?= h($b["status"] ?? "—") ?></span></td>
+                <td>
+                  <?= h($paymentMethodLabel) ?> —
+                  <span class="badge <?= h($paymentBadgeClass) ?>"><?= h($b["payment_status"] ?? "—") ?></span>
+                </td>
+                <td><?= h($b["created_at"]) ?></td>
+                <td>
+                  <form class="delete-form" method="POST" action="admin.php" onsubmit="return confirm('Delete this booking? This cannot be undone.');">
+                    <input type="hidden" name="action" value="delete_booking">
+                    <input type="hidden" name="booking_id" value="<?= h($b["id"]) ?>">
+                    <button type="submit" class="delete-btn">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            <?php endforeach; endif; ?>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- ============ ACCOUNTS TAB ============ -->
+    <div class="tab-panel" id="tab-accounts">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Registered Accounts</h2>
+          <span class="count"><?= h(count($users)) ?> total</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Full Name</th>
+              <th>Email</th>
+              <th>Joined</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (empty($users)): ?>
+              <tr class="empty-row"><td colspan="3">No accounts yet.</td></tr>
+            <?php else: foreach ($users as $u): ?>
+              <tr>
+                <td><?= h($u["full_name"]) ?></td>
+                <td><?= h($u["email"]) ?></td>
+                <td><?= h($u["created_at"]) ?></td>
+              </tr>
+            <?php endforeach; endif; ?>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <!-- ============ PC STATIONS TAB ============ -->
+    <div class="tab-panel" id="tab-stations">
+      <section class="panel" style="padding: 24px;">
+        <div class="pc-legend">
+          <span><span class="swatch idle"></span> Available</span>
+          <span><span class="swatch occupied"></span> Reserved today</span>
+        </div>
+        <p style="font-size: 12px; color: var(--muted-foreground); margin-bottom: 20px;">
+          Based on today's bookings, filled into PC 1–<?= h(TOTAL_PC_STATIONS) ?> in the order they were booked.
+          The booking form doesn't collect a specific PC number, so this is a capacity view, not live seat tracking.
+        </p>
+        <div class="pc-grid">
+          <?php for ($n = 1; $n <= TOTAL_PC_STATIONS; $n++):
+            $assigned = $pcAssignments[$n];
+          ?>
+            <div class="pc-card <?= $assigned ? 'occupied' : '' ?>">
+              <div class="pc-card-name">PC <?= h($n) ?></div>
+              <?php if ($assigned): ?>
+                <span class="pc-card-status">Reserved</span>
+                <div class="pc-card-detail">
+                  <?= h($assigned["full_name"] ?? "Deleted user") ?><br>
+                  <?= h($assigned["plan_name"]) ?> — <?= h($assigned["booking_time"]) ?>
+                </div>
+              <?php else: ?>
+                <span class="pc-card-status">Idle</span>
+              <?php endif; ?>
+            </div>
+          <?php endfor; ?>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ REVIEWS TAB ============ -->
+    <div class="tab-panel" id="tab-reviews">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Customer Reviews</h2>
+          <span class="count"><?= h(count($reviews)) ?> total</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Rating</th>
+              <th>Feedback</th>
+              <th>Posted on</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (empty($reviews)): ?>
+              <tr class="empty-row"><td colspan="5">No reviews yet.</td></tr>
+            <?php else: foreach ($reviews as $r): ?>
+              <tr>
+                <td><?= h($r["full_name"] ?? "Deleted user") ?></td>
+                <td style="color: var(--pink); letter-spacing: 2px;">
+                  <?= str_repeat("★", (int)$r["rating"]) . str_repeat("☆", 5 - (int)$r["rating"]) ?>
+                </td>
+                <td><?= $r["comment"] ? nl2br(h($r["comment"])) : '<span style="color: var(--muted-foreground);">—</span>' ?></td>
+                <td><?= h($r["created_at"]) ?></td>
+                <td>
+                  <form class="delete-form" method="POST" action="admin.php" onsubmit="return confirm('Delete this review? This cannot be undone.');">
+                    <input type="hidden" name="action" value="delete_review">
+                    <input type="hidden" name="review_id" value="<?= h($r["id"]) ?>">
+                    <button type="submit" class="delete-btn">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            <?php endforeach; endif; ?>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  const pageTitles = { dashboard: 'Dashboard', bookings: 'Bookings', accounts: 'Registered Accounts', stations: 'PC Stations', reviews: 'Customer Reviews' };
+
+  function showTab(tabName, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tab-' + tabName).classList.add('active');
+
+    document.querySelectorAll('.sidebar-nav button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    document.getElementById('pageTitle').textContent = pageTitles[tabName];
+  }
+</script>
+
+</body>
+</html>
